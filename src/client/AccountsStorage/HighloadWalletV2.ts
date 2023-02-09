@@ -47,6 +47,59 @@ export class HighloadWalletV2 implements Account {
     return publicKey.toString(16).padStart(64, '0');
   }
 
+  async prepareMessageWithGifts(args: PrepareMessageParams, gifts: PrepareMessageParams[], ctx: AccountsStorageContext): Promise<nt.SignedMessage> {
+    const { publicKey, stateInit } = await this.fetchState(ctx);
+    const signer = await ctx.getSigner(publicKey);
+
+    const internalMessages = gifts.map((gift, index) => {
+      const attachedPayload = gift.payload ? ctx.encodeInternalInput(gift.payload) : undefined;
+  
+      const internalMessage = ctx.encodeInternalMessage({
+          dst: gift.recipient,
+          bounce: gift.bounce,
+          stateInit: gift.stateInit,
+          body: attachedPayload,
+          amount: gift.amount,
+        });
+
+        return [
+          index,
+          {
+            flags: 3,
+            message: internalMessage,
+          },
+        ]
+    })
+
+    const params: nt.TokensObject = {
+      messages: internalMessages,
+    };
+
+    const messages = ctx.packIntoCell({ structure: MESSAGES_STRUCTURE, data: params });
+    const messagesHash = ctx.getBocHash(messages);
+    const expireAt = ctx.nowSec + args.timeout;
+
+    params.walletId = WALLET_ID;
+    params.expireAt = expireAt;
+    params.messagesHash = `0x${messagesHash.slice(-8)}`;
+
+    const unsignedPayload = ctx.packIntoCell({ structure: UNSIGNED_TRANSFER_STRUCTURE, data: params });
+    const hash = ctx.getBocHash(unsignedPayload);
+    const signature = await signer.sign(hash, args.signatureId);
+    const { signatureParts } = ctx.extendSignature(signature);
+
+    params.signatureHigh = signatureParts.high;
+    params.signatureLow = signatureParts.low;
+    const signedPayload = ctx.packIntoCell({ structure: SIGNED_TRANSFER_STRUCTURE, data: params });
+
+    return ctx.createRawExternalMessage({
+      address: this.address.toString(),
+      body: signedPayload,
+      stateInit,
+      expireAt,
+    });
+  }
+
   async prepareMessage(args: PrepareMessageParams, ctx: AccountsStorageContext): Promise<nt.SignedMessage> {
     const { publicKey, stateInit } = await this.fetchState(ctx);
     const signer = await ctx.getSigner(publicKey);
